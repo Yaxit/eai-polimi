@@ -20,7 +20,9 @@
 #include "AiDPU_vtbl.h"
 #include "params.h"
 #include "services/sysdebug.h"
-#include "pre_processing_app.h"
+#include "mfcc_params.h"
+#include "arm_math.h"
+
 
 // set the AIDPU_G_TP_MS_2 as 9.81 if acceleration data inside the DPU are needed in [m/s^2] otherwise set it to 1.0
 //#define AIDPU_G_TO_MS_2 (9.81F)
@@ -43,9 +45,14 @@ static const IDPU_vtbl sAiDPU_vtbl = {
 };
 
 
-pre_processing_data_t pre_processing_data;
+//pre_processing_data_t pre_processing_data;
+static arm_mfcc_instance_f32 mfcc_inst;
+static float32_t samples_buf[N_FFT];	// contains all samples needed for MFCC
+static float32_t samples_hist_buf[HOP_LEN];	// since MFCC is destructive, needed to store last slice of data
+static float32_t mfcc_temp_buf[N_FFT+2];
 
-
+static float32_t nn_input[AI_NETWORK_IN_1_SIZE];
+//static float32_t nn_output[AI_NETWORK_OUT_1_SIZE];
 /* Private member function declaration */
 /***************************************/
 
@@ -106,8 +113,8 @@ uint16_t AiDPUSetStreamsParam(AiDPU_t *_this, uint16_t signal_size, uint8_t axes
   _this->super.dpuWorkingStream.packet.payload_type = AI_FMT;
   _this->super.dpuWorkingStream.packet.payload_fmt  = AI_SP_FMT_FLOAT32_RESET();
 
-  /* the shape is 2D the accelerometer is 3 AXES (X,Y,Z)  */
-  _this->super.dpuWorkingStream.packet.shape.n_shape                          = 2 ;
+  /* the shape is 1D the the microphone as 1 axis (X)*/
+  _this->super.dpuWorkingStream.packet.shape.n_shape                          = 1 ;
   _this->super.dpuWorkingStream.packet.shape.shapes[AI_LOGGING_SHAPES_WIDTH]  = axes;
   _this->super.dpuWorkingStream.packet.shape.shapes[AI_LOGGING_SHAPES_HEIGHT] = signal_size;
 
@@ -159,10 +166,16 @@ sys_error_code_t AiDPU_vtblInit(IDPU *_this) {
     IEventListenerSetOwner((IEventListener *) ADPU_GetEventListenerIF(&p_obj->super), &p_obj->super);
 
     /* Free signal pre-processing functions */
-    pre_processing_free(&pre_processing_data);
+//    pre_processing_free(&pre_processing_data);
 
     /* Initialize signal pre-processing functions */
-    pre_processing_init(&pre_processing_data);
+//    pre_processing_init(&pre_processing_data);
+    arm_mfcc_init_f32(&mfcc_inst, N_FFT, N_MELS, N_DCT,
+    		mfcc_dct_coefs_config1_f32,
+			mfcc_filter_pos_config1_f32,
+			mfcc_filter_len_config1_f32,
+			mfcc_filter_coefs_config1_f32,
+			mfcc_window_coefs_config1_f32);
 
     /* Initialize AI library */
     if (aiInit(NETWORK_NAME)==0)
@@ -184,6 +197,8 @@ sys_error_code_t AiDPU_vtblProcess(IDPU *_this)
   CBItem **p_consumer_buff = NULL;
   CircularBuffer *p_circular_buffer = NULL;
 
+  static uint32_t slice_cnt = 1;
+
   //DPU has the priority
   if(!super->isADPUattached)
   {
@@ -194,7 +209,6 @@ sys_error_code_t AiDPU_vtblProcess(IDPU *_this)
         uint32_t sensor_ready = CB_GetReadyItemFromTail(super->sensors[i].cb_handle.pCircularBuffer, &super->sensors[i].cb_handle.pConsumerDataBuff);
         if(sensor_ready == SYS_CB_NO_READY_ITEM_ERROR_CODE)
         {
-//          return SYS_NO_ERROR_CODE;
           return SYS_CB_NO_READY_ITEM_ERROR_CODE;
         }
         p_consumer_buff = &super->sensors[i].cb_handle.pConsumerDataBuff;
@@ -216,38 +230,51 @@ sys_error_code_t AiDPU_vtblProcess(IDPU *_this)
 
   if((*p_consumer_buff) != NULL)
   {
-	tridimensional_data_t raw_data[INPUT_BUFFER_SIZE];
-
-    assert_param(p_obj->scale != 0.0F);
     assert_param(AIDPU_NB_AXIS == p_obj->super.dpuWorkingStream.packet.shape.shapes[AI_LOGGING_SHAPES_WIDTH]);
     assert_param(INPUT_BUFFER_SIZE == p_obj->super.dpuWorkingStream.packet.shape.shapes[AI_LOGGING_SHAPES_HEIGHT]);
 
-    float *p_in = (float*) CB_GetItemData((*p_consumer_buff));
-    float scale = p_obj->scale;
+    float32_t *p_in = (float32_t*) CB_GetItemData((*p_consumer_buff));
+    float32_t scale = p_obj->scale;
 
-    for(int i = 0; i < INPUT_BUFFER_SIZE; i++)
+    // TODO use DMA
+    // TODO make generic copy for any hop_len
+    for(int i=0; i<HOP_LEN; i++)
     {
-      raw_data[i].x = *p_in++ * scale;
-      raw_data[i].y = *p_in++ * scale;
-      raw_data[i].z = *p_in++ * scale;
+    	samples_buf[i] = samples_hist_buf[i];
     }
 
-    float32_t preprocessing_output_array[AI_NETWORK_IN_1_SIZE];
+    for(int i = 0; i < HOP_LEN; i++)
+    {
+    	float32_t num = p_in[i] * scale;
+    	samples_buf[i+HOP_LEN] = num;
+    	samples_hist_buf[i] = num;	// store history
+    }
 
-    /* call preprocessing function */
-    pre_processing_process(raw_data, INPUT_BUFFER_SIZE, preprocessing_output_array, AI_NETWORK_IN_1_SIZE, &pre_processing_data);
+    // release the buffer as soon as possible
+ 	CB_ReleaseItem(p_circular_buffer, (*p_consumer_buff));
+	(*p_consumer_buff) = NULL;
 
-    /* call Ai library. */
-    p_obj->ai_processing_f(NETWORK_NAME, (float*) preprocessing_output_array, p_obj->ai_out);
-    //SYS_DEBUGF(SYS_DBG_LEVEL_VERBOSE, ("[AiDPU_vtblProcess()] label_id: %d, accuracy: %f.\r\n", (int) (p_obj->ai_out[0]), (float) (p_obj->ai_out[1])));
+	// shift input history by one
+	for(int i=0; i<N_DCT*(N_MFCC_HIST-1); i++)
+	{
+		nn_input[i] = nn_input[i+N_DCT];	//TODO DMA
+	}
 
-    /* release the buffer as soon as possible */
-    CB_ReleaseItem(p_circular_buffer, (*p_consumer_buff));
-    (*p_consumer_buff) = NULL;
 
-    ProcessEvent evt_acc;
-    ProcessEventInit((IEvent*) &evt_acc, super->pProcessEventSrc, (ai_logging_packet_t*) &super->dpuOutStream, ADPU_GetTag(super));
-    IDPU_DispatchEvents(_this, &evt_acc);
+	// pre-process every new sample slice and store MFCC
+    arm_mfcc_f32(&mfcc_inst, samples_buf, &nn_input[N_DCT*(N_MFCC_HIST-1)], mfcc_temp_buf);
+
+    // call the AI at a desired rate (here every 10s).
+    // TODO: history shift is necessary only once per AI call, can optimize
+    if(!(slice_cnt%(N_MFCC_HIST-1)))
+	{
+		ProcessEvent evt_acc;
+		ProcessEventInit((IEvent*) &evt_acc, super->pProcessEventSrc, (ai_logging_packet_t*) &super->dpuOutStream, ADPU_GetTag(super));
+		IDPU_DispatchEvents(_this, &evt_acc);
+		p_obj->ai_processing_f(NETWORK_NAME, nn_input, p_obj->ai_out);
+	}
+	slice_cnt++;
+
   }
   return xRes;
 }

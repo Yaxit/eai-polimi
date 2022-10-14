@@ -29,19 +29,19 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "mx.h"
 /* USER CODE END Includes */
 
 extern UART_HandleTypeDef huart2;
 
-extern UART_HandleTypeDef huart3;
+extern UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
 
 void MX_USART2_UART_Init(void);
-void MX_USART3_UART_Init(void);
+void MX_UART4_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 

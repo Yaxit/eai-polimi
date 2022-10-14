@@ -58,7 +58,7 @@ extern "C" {
 #define SYS_DBG_SMUTIL                     SYS_DBG_ON                 ///< Utility task debug control byte
 #define SYS_DBG_SDC                        SYS_DBG_OFF                 ///< SDCARD task debug control byte
 #define SYS_DBG_IMP23ABSU                  SYS_DBG_OFF                 ///< IMP23ABSU task debug control byte
-#define SYS_DBG_IMP34DT05                  SYS_DBG_OFF                 ///< IMP34DT05 task debug control byte
+#define SYS_DBG_IMP34DT05                  SYS_DBG_ON                 ///< IMP34DT05 task debug control byte
 #define SYS_DBG_IIS2MDC                    SYS_DBG_OFF                 ///< IIS2MDC task debug control byte
 #define SYS_DBG_IIS2DH                     SYS_DBG_OFF                 ///< IIS2DH task debug control byte
 #define SYS_DBG_STTS751                    SYS_DBG_OFF                 ///< STTS751 task debug control byte
@@ -82,11 +82,11 @@ extern "C" {
 //#define SYS_DBG_TP2_CLK_ENABLE             __HAL_RCC_GPIOG_CLK_ENABLE
 
 /* ODeV DBG UART used for the system log */
-extern UART_HandleTypeDef huart2;
-void MX_USART2_UART_Init(void);
+extern UART_HandleTypeDef huart4;
+void MX_UART4_UART_Init(void);
 
-#define SYS_DBG_UART                       huart2
-#define SYS_DBG_UART_INIT                  MX_USART2_UART_Init
+#define SYS_DBG_UART                       huart4
+#define SYS_DBG_UART_INIT                  MX_UART4_UART_Init
 #define SYS_DBG_UART_TIMEOUT_MS            5000
 
 /* ODeV runtime statistic timer configuration for FreeRTOS */
